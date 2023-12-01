@@ -63,6 +63,9 @@ def get_grids_in_hu(
     huc_geo = gdf_huc['geometry'].values   # the polygon for this huc
         
     # find (lon, lat) pairs within the area
+    ##### TO DO LATER: need to refine the .contains() method, because some grid center points are outside the huc4 polygon
+    ##### for huc4==0601, the most downstream grid is not included because the huc4 polygon doesn't cover it, but there is a reservoir there
+    ##### update: this may be fine for thr drought analysis, because the most downstream reservoir (if its grid is not contained) serves water supply for the downstream basins
     lon_lat_sub = [i for i in lon_lat_all if huc_geo.contains(i[0])[0]]
 
     # create point geodataframe for selected points and check
@@ -594,7 +597,7 @@ def run_simulation(
         run_dir: str,    # directory to save the simulation results
         grid_length: float,    # grid length (km)
         upstream_grid_dict: Dict,    # {(grid_i, grid_j): [(grid_i, grid_j)] list of connected upstream grids}. The key has been sorted by topological sorting.
-        grid: np.ndarray,    # structured array of the grid at the time step
+        grid: np.ndarray,    # structured array of the grid at the time step (seems should be the initial grid)
         start_date: str,    # start date of the simulation period yyyy-mm-dd
         end_date: str,    # end date of the simulation period yyyy-mm-dd
         qs_array_huc4: np.ndarray,    # NLDAS surface runoff array for the simulation period (mm/day)
@@ -617,6 +620,9 @@ def run_simulation(
 
         # Update grid_storage_start for each cell based on the previous time step's grid_storage_end
         if t > 0:    # skip the first time step
+
+            grid = grid.copy()    # make a copy of the grid
+
             grid[:, :]['grid_storage_start'] = grid[:, :]['grid_storage_end']
             grid[:, :]['reservoir_storage_start'] = grid[:, :]['reservoir_storage_end']
 
