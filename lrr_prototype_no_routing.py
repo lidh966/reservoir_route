@@ -417,6 +417,7 @@ def update_grid_storage(
     return grid_storage_end
 
 def calculate_grid_outflow_before_operation(
+        d_in: float,    # inflow to the grid [m3/s]
         grid_storage_end: float,    # grid storage at the end of the time step [m3]  
         grid_length: float,    # grid length (km)
         d: float,    # grid flow distance [km]
@@ -426,13 +427,15 @@ def calculate_grid_outflow_before_operation(
     Calculate outflow before reservoir operation.
     """
 
-    delta_z = grid_length * 1000    # grid length (km) to m
-    d = d * 1000    # grid length (km) to m
+    # delta_z = grid_length * 1000    # grid length (km) to m
+    # d = d * 1000    # grid length (km) to m
 
-    c = u_e / d
+    # c = u_e / d
     
-    d_out = c * grid_storage_end    # outflow to downstream grid [m3/s]
+    # d_out = c * grid_storage_end    # outflow to downstream grid [m3/s]
 
+    d_out = d_in    # m3/s
+    
     return d_out
 
 def gdrom_release(
@@ -559,7 +562,8 @@ def channel_routing(
 
         # Calculate outflow
         # outflow before reservoir operation
-        grid[i, j]['outflow_before_operation'] = calculate_grid_outflow_before_operation(grid[i, j]['grid_storage_end'], grid_length, grid[i, j]['flow_distance'], u_e)
+        grid[i, j]['outflow_before_operation'] = calculate_grid_outflow_before_operation(grid[i, j]['inflow_total'],
+            grid[i, j]['grid_storage_end'], grid_length, grid[i, j]['flow_distance'], u_e)
         # outflow after reservoir operation [m3/s]
         grid[i, j]['outflow_after_operation'] = calculate_grid_outflow_after_operation(
             grid[i, j]['reservoir_id'], grid[i, j]['reservoir_max_storage'], grid[i, j]['reservoir_storage_start'], pdsi_t, doy_t, grid[i, j]['outflow_before_operation'])
@@ -656,7 +660,7 @@ if __name__ == '__main__':
     grid_length = 111 / 8    # grid length (km)
 
     # simulation period
-    start_date = '1990-10-01'
+    start_date = '1980-10-01'
     end_date = '2000-10-01'
 
     # read conus grid nc
@@ -668,7 +672,7 @@ if __name__ == '__main__':
     res_gid_array, res_grid_id_array, res_max_storage_array, res_lat_array, res_lon_array = read_conus_reservoir_nc(conus_res_nc_path)
 
     # read huc4 basin
-    huc4 = '1711'
+    huc4 = '0601'
     nhd_data_dir = '/Users/donghui/Box Sync/Research/PhD/Projects/Drought_Cycle_Analysis/Data'
     gdf_huc2_conus, gdf_huc4_conus, gdf_huc4 = read_huc4_basin(huc4, nhd_data_dir)
 

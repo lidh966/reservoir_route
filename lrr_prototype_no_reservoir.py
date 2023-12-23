@@ -453,27 +453,7 @@ def gdrom_release(
     reservoir_storage_end: reservoir storage at the end of the time step [acft]
     """
     
-    # First, determine which module to use
-    try:
-        sim_module_func = getattr(gdrom_rules, f'determine_module_{reservoir_gid}')
-        sim_module = sim_module_func(inflow, storage, pdsi, doy)
-    
-        # Then, determine release based on module
-        sim_release_func = getattr(gdrom_rules, f'determine_module_release_{reservoir_gid}_{sim_module}')
-        sim_release = sim_release_func(inflow, storage)
-        
-    except AttributeError:
-        # This error comes probably from the single-module reservoir
-        sim_release_func = getattr(gdrom_rules, f'determine_module_release_{reservoir_gid}_0')
-        sim_release = sim_release_func(inflow, storage)
-    
-    # Postprocess the GDROM-simulated release. e.g., to see if any physical constraint is violated
-    # check if storage > max storage
-    if inflow + storage - sim_release > max_storage:
-        sim_release = inflow + storage - max_storage
-    # check if storage < min storage. Currently, min storage is set to 0
-    elif inflow + storage - sim_release < min_storage:
-        sim_release = inflow + storage - min_storage
+    sim_release = inflow
 
     return sim_release
 
