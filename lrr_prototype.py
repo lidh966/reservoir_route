@@ -301,6 +301,38 @@ def read_nldas_runoff(
 
     return nldas_qs_array, nldas_qsb_array
 
+def read_gcam_demand(
+        gcam_demand_nc_path: str,    # path to the GCAM demand (CONUS) nc file
+        huc4_lat_index_in_conus: np.ndarray,    # lat index of the huc4 basin in the conus grid
+        huc4_lon_index_in_conus: np.ndarray,    # lon index of the huc4 basin in the conus grid
+        start_date: str,    # start date of the simulation period yyyy-mm-dd
+        end_date: str    # end date of the simulation period yyyy-mm-dd
+        ) -> np.ndarray:
+    """
+    Read GCAM water demand (total consumption) data for the simulation period.
+        The returned arrays are for the huc4 basin only.
+
+    Returns
+    -------
+    total_demand_array : np.ndarray
+        total water demand array for the simulation period (mm/day)
+    """
+
+    # make sure the huc4_lat_index_in_conus and huc4_lon_index_in_conus are 1D array and sorted
+    huc4_lat_index_in_conus = np.unique(huc4_lat_index_in_conus)
+    huc4_lon_index_in_conus = np.unique(huc4_lon_index_in_conus)
+
+    with nc.Dataset(gcam_demand_nc_path, 'r') as ds:
+        time = ds.variables['time'][:]    # np array of str yyyy-mm-dd
+        # time index for the simulation period
+        start_date_index = np.where(time == start_date)[0][0]
+        end_date_index = np.where(time == end_date)[0][0]
+        time_index = np.array(range(start_date_index, end_date_index+1))
+
+        total_demand_array = ds.variables['total_consumption'][:,:,:][np.ix_(time_index, huc4_lat_index_in_conus, huc4_lon_index_in_conus)]
+
+    return total_demand_array
+
 def read_pdsi(pdsi_file_path: str, start_date: str, end_date: str) -> np.ndarray:
     """
     Returns
@@ -339,8 +371,12 @@ def initialize_grid(
         ('reservoir_storage_start', float),    # reservoir storage at the start of the time step [acft]
         ('reservoir_storage_end', float),    # reservoir storage at the end of the time step [acft]
         ('reservoir_max_storage', float),    # reservoir max storage [acft]
-        ('qs', float),    # [mm/day]
-        ('qsb', float),    # [mm/day]
+        ('qs', float),    # nldas surface runoff [mm/day]
+        ('qsb', float),    # nldas baseflow [mm/day]
+        ('qs_surplus', float),    # surface runoff surplus, after substrating for demand [mm/day]
+        ('qsb_surplus', float),    # baseflow surplus, after substrating for demand [mm/day]
+        ('total_water_demand', float),    # total water demand - consumptive [mm/day]'
+        ('water_deficit', float),    # water deficit [mm/day]
         ('inflow_from_upstream', float),    # [m3/s]
         ('inflow_from_grid_runoff', float),    # [m3/s]
         ('inflow_total', float),    # total inflow to the grid cell [m3/s]
@@ -452,6 +488,8 @@ def gdrom_release(
     sim_release: simulated release from GDROM. Unit is acft
     reservoir_storage_end: reservoir storage at the end of the time step [acft]
     """
+
+    min_storage = max_storage * 0.1    # set min (dead) storage is 10% of max storage
     
     # First, determine which module to use
     try:
@@ -529,9 +567,11 @@ def channel_routing(
         upstream_grid_dict: Dict,    # {(grid_i, grid_j): [(grid_i, grid_j)] list of connected upstream grids}. The key has been sorted by topological sorting.  
         qs_array_t: np.ndarray,    # NLDAS surface runoff array for the time step t (mm/day)
         qsb_array_t: np.ndarray,    # NLDAS baseflow array for the time step t (mm/day)
+        demand_array_t: np.ndarray,    # total water demand array for the time step t (mm/day)
         pdsi_t: float,    # PDSI array for the time step t
         doy_t: int,    # day of year for the time step t
         u_e: float,   # effective velocity [m/s], as the model parameter to calibrate
+        is_demand: bool = True    # if True, use demand_array_t; if False, use 0 as demand
     ):
     """
     Channel routing at a given time step.
@@ -542,15 +582,46 @@ def channel_routing(
     # Loop through the sorted grids
     for (i, j), upstream_grids in upstream_grid_dict.items():
 
+        # Calculate inflow to the grid cell
+        # inflow from upstream grids
+        grid[i, j]['inflow_from_upstream'] = np.nansum([grid[upstream_grid]['outflow_after_operation'] for upstream_grid in upstream_grids])    # [m3/s]. using np.nansum() to treat nan as 0, if there is not upstream grid
+
         # Read new grid cell runoff for time step t
         grid[i, j]['qs'] = qs_array_t[i, j]
         grid[i, j]['qsb'] = qsb_array_t[i, j]
 
-        # Calculate inflow to the grid cell
-        # inflow from upstream grids
-        grid[i, j]['inflow_from_upstream'] = np.nansum([grid[upstream_grid]['outflow_after_operation'] for upstream_grid in upstream_grids])    # [m3/s]. using np.nansum() to treat nan as 0, if there is not upstream grid
-        # inflow from grid runoff
-        grid[i, j]['inflow_from_grid_runoff'] = (grid[i, j]['qs'] + grid[i, j]['qsb']) / 1000 * grid_area * 1000 * 1000 / (3600*24)    # mm/day * km2 to m3/s
+        # Read new grid cell water demand for time step t
+        if is_demand:
+            grid[i, j]['total_water_demand'] = demand_array_t[i, j]
+        else:
+            grid[i, j]['total_water_demand'] = 0
+
+        # Calculate surplus - satisfy demand using local runoff first
+        channel_stream = grid[i, j]['inflow_from_upstream'] * 3600 * 24 / (grid_area * 1000 * 1000)    # m3/s to mm/day
+        max_use_ratio = 0.8    # maximum ratio of channel stream to satisfy demand
+        if grid[i, j]['total_water_demand'] <= grid[i, j]['qs']:
+            grid[i, j]['qs_surplus'] = grid[i, j]['qs'] - grid[i, j]['total_water_demand']
+            grid[i, j]['qsb_surplus'] = grid[i, j]['qsb']
+            grid[i, j]['water_deficit'] = 0
+        elif grid[i, j]['total_water_demand'] <= grid[i, j]['qs'] + grid[i, j]['qsb']:
+            grid[i, j]['qs_surplus'] = 0
+            grid[i, j]['qsb_surplus'] = grid[i, j]['qs'] + grid[i, j]['qsb'] - grid[i, j]['total_water_demand']
+            grid[i, j]['water_deficit'] = 0
+        elif grid[i, j]['total_water_demand'] <= grid[i, j]['qs'] + grid[i, j]['qsb'] + channel_stream * max_use_ratio:
+            grid[i, j]['qs_surplus'] = 0
+            grid[i, j]['qsb_surplus'] = 0
+            grid[i, j]['water_deficit'] = 0
+            grid[i, j]['inflow_from_upstream'] = (grid[i, j]['qs'] + grid[i, j]['qsb'] + channel_stream - grid[i, j]['total_water_demand']) / 1000 * grid_area * 1000 * 1000 / (3600*24)    # mm/day * km2 to m3/s
+        else:
+            grid[i, j]['qs_surplus'] = 0
+            grid[i, j]['qsb_surplus'] = 0
+            grid[i, j]['inflow_from_upstream'] = (1 - max_use_ratio) * channel_stream / 1000 * grid_area * 1000 * 1000 / (3600*24)    # mm/day * km2 to m3/s
+            grid[i, j]['water_deficit'] = grid[i, j]['total_water_demand'] - grid[i, j]['qs'] - grid[i, j]['qsb'] - channel_stream * max_use_ratio
+       
+        # inflow from grid runoff, modified to grid qs and qsb surplus
+        grid[i, j]['inflow_from_grid_runoff'] = (grid[i, j]['qs_surplus'] + grid[i, j]['qsb_surplus']) / 1000 * grid_area * 1000 * 1000 / (3600*24)    # mm/day * km2 to m3/s
+        # grid[i, j]['inflow_from_grid_runoff'] = (grid[i, j]['qs'] + grid[i, j]['qsb']) / 1000 * grid_area * 1000 * 1000 / (3600*24)    # mm/day * km2 to m3/s #
+        
         # total inflow to the grid cell
         grid[i, j]['inflow_total'] = grid[i, j]['inflow_from_upstream'] + grid[i, j]['inflow_from_grid_runoff']
 
@@ -602,10 +673,12 @@ def run_simulation(
         end_date: str,    # end date of the simulation period yyyy-mm-dd
         qs_array_huc4: np.ndarray,    # NLDAS surface runoff array for the simulation period (mm/day)
         qsb_array_huc4: np.ndarray,    # NLDAS baseflow array for the simulation period (mm/day)
+        demand_array_huc4: np.ndarray,    # total water demand array for the simulation period (mm/day)
         pdsi_array_huc4: np.ndarray,    # PDSI array for the simulation period    
         doy_array: np.ndarray,    # day of year array for the simulation period
         save_var_list: List[str],    # list of variables to save
-        u_e: float    # effective velocity [m/s], as the model parameter to calibrate
+        u_e: float,    # effective velocity [m/s], as the model parameter to calibrate
+        is_demand: bool = True    # if True, use demand_array_t; if False, use 0 as demand
     ) -> List[np.ndarray]:    # list of model states (grids) for each time step    
     """
     Run simulation over the simulation period.
@@ -629,11 +702,12 @@ def run_simulation(
         # get the model inputs for the time step
         qs_array_t = qs_array_huc4[t, :, :]
         qsb_array_t = qsb_array_huc4[t, :, :]
+        demand_array_t = demand_array_huc4[t, :, :]
         pdsi_t = pdsi_array_huc4[t]
         doy_t = doy_array[t]
 
         # channel routing
-        grid = channel_routing(grid_length, grid, upstream_grid_dict, qs_array_t, qsb_array_t, pdsi_t, doy_t, u_e)
+        grid = channel_routing(grid_length, grid, upstream_grid_dict, qs_array_t, qsb_array_t, demand_array_t, pdsi_t, doy_t, u_e, is_demand)
 
         # append the model states
         states.append(grid)
