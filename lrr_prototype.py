@@ -11,6 +11,21 @@ from typing import List, Tuple, Dict
 from shapely.geometry import Point
 
 
+def read_storage_assimilation(storage_file_path: str) -> pd.DataFrame:
+    """
+    Read the reservoir storage time series file for assimilation.
+
+    Returns
+    -------
+    df_storage_assimilation : pd.DataFrame
+        index: Time [pd.Timestamp]
+        cols: 'Reservoir gid' - reservoir storage [acft]
+    """
+
+    df_storage_assimilation = pd.read_csv(storage_file_path, index_col=0)
+    df_storage_assimilation.index = pd.to_datetime(df_storage_assimilation.index)
+    return df_storage_assimilation
+
 def read_conus_grid_nc(conus_grid_nc_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     with nc.Dataset(conus_grid_nc_path) as ds:
         lon_array_conus = ds.variables['lon'][:]
@@ -666,6 +681,7 @@ def save_model_state(
 
 def run_simulation(
         run_dir: str,    # directory to save the simulation results
+        storage_file_path: str,    # path to the reservoir storage time series file [for storage assimilation]
         grid_length: float,    # grid length (km)
         upstream_grid_dict: Dict,    # {(grid_i, grid_j): [(grid_i, grid_j)] list of connected upstream grids}. The key has been sorted by topological sorting.
         grid: np.ndarray,    # structured array of the grid at the time step (seems should be the initial grid)
@@ -678,11 +694,14 @@ def run_simulation(
         doy_array: np.ndarray,    # day of year array for the simulation period
         save_var_list: List[str],    # list of variables to save
         u_e: float,    # effective velocity [m/s], as the model parameter to calibrate
-        is_demand: bool = True    # if True, use demand_array_t; if False, use 0 as demand
+        is_demand: bool = True,    # if True, use demand_array_t; if False, use 0 as demand
     ) -> List[np.ndarray]:    # list of model states (grids) for each time step    
     """
     Run simulation over the simulation period.
     """
+
+    # read storage assimilation data
+    df_storage_assimilation = read_storage_assimilation(storage_file_path)
 
     # initialize all model states to store
     states = []
@@ -709,14 +728,41 @@ def run_simulation(
         # channel routing
         grid = channel_routing(grid_length, grid, upstream_grid_dict, qs_array_t, qsb_array_t, demand_array_t, pdsi_t, doy_t, u_e, is_demand)
 
+
+        # ---- add storage assimilation here ---- #
+
+        # 1. check if the date is the assimilation date
+        # assimilation date: Oct. 1 of each year
+        date = pd.date_range(start_date, end_date)[t]
+        if date.month == 10 and date.day == 1:
+            # if yes, replace grid storage with the assimilation data
+            # loop through the grids with reservoirs
+            for (i, j) in zip(np.where(grid[:,:]['reservoir_id']>0)[0], np.where(grid[:,:]['reservoir_id']>0)[1]):
+                reservoir_id = grid[i, j]['reservoir_id']
+                if str(reservoir_id) in df_storage_assimilation.columns:
+                    assim_value = df_storage_assimilation.loc[date, str(reservoir_id)]
+                    if assim_value <= -9000:    # -9999 is the missing value
+                        pass
+                    else:
+                        grid[i, j]['reservoir_storage_end'] = assim_value
+                        print(f'Assimilation: {date} - {reservoir_id} - {assim_value}')
+                else:
+                    pass
+
+        # ---- end of storage assimilation ---- #
+        
+        # occasionally, storage assimilation may result in negative release simulation, which is not physical
+        # to avoid this, we can set the negative release to 0
+        grid[:, :]['outflow_after_operation'] = np.where(grid[:, :]['outflow_after_operation'] < 0, 0, grid[:, :]['outflow_after_operation'])
+
         # append the model states
         states.append(grid)
 
-        # save the model state to nc file
-        date = pd.date_range(start_date, end_date)[t].strftime('%Y-%m-%d')
-        # save_nc_path = f'/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/results/lrr_output/{huc4}_model_state_{date}.nc'
-        save_nc_path = os.path.join(run_dir, f'model_state_{date}.nc')
-        save_model_state(grid, save_var_list, save_nc_path)
+        # # save the model state to nc file
+        # date = pd.date_range(start_date, end_date)[t].strftime('%Y-%m-%d')
+        # # save_nc_path = f'/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/results/lrr_output/{huc4}_model_state_{date}.nc'
+        # save_nc_path = os.path.join(run_dir, f'model_state_{date}.nc')
+        # save_model_state(grid, save_var_list, save_nc_path)
 
     return states
 
