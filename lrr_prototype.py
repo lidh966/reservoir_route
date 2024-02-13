@@ -745,7 +745,7 @@ def run_simulation(
                         pass
                     else:
                         grid[i, j]['reservoir_storage_end'] = assim_value
-                        print(f'Assimilation: {date} - {reservoir_id} - {assim_value}')
+                        # print(f'Assimilation: {date} - {reservoir_id} - {assim_value}')
                 else:
                     pass
 
