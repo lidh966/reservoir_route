@@ -123,7 +123,11 @@ def get_downstream_cell(i: int, j: int, direction: int) -> Tuple[int, int] or No
 
 
     # Get the changes in row and column for the given direction
-    di, dj = direction_map.get(direction, (0, 0))    # if direction is not in the direction_map, return (0, 0)
+    try:
+        di, dj = direction_map.get(direction, (0, 0))    # if direction is not in the direction_map, return (0, 0)
+    except TypeError:
+        print(f'Error: direction is not an integer: {direction}')    # for some low-latitutude grids, the flow direction has errors
+        di, dj = 0, 0
 
     # If di and dj are both 0, it means the direction is not defined (e.g., a sink)
     if di == 0 and dj == 0:
@@ -769,15 +773,24 @@ def run_simulation(
 # Test
 if __name__ == '__main__':
 
-    # parameters to calibrate
-    u_e = 0.6    # effective velocity [m/s]
+    # ---- Prepare the model run for a specific basin ---- #
+
+    huc4 = '0313'
 
     # constant parameters
     grid_length = 111 / 8    # grid length (km)
 
     # simulation period
-    start_date = '1990-10-01'
-    end_date = '2000-10-01'
+    start_date = '1988-01-01'
+    end_date = '2019-12-31'
+
+    # define run directory
+    run_dir = f'/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/results/lrr_output/{huc4}'
+    if not os.path.exists(run_dir):
+        os.makedirs(run_dir)
+
+    # reservoir storage file path - for assimilation
+    reservoir_storage_file_path = '/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/processed/LRR/input/reservoir_storage.csv'
 
     # read conus grid nc
     conus_grid_nc_path = '/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/processed/LRR/input/conus_nldas_grid.nc'
@@ -788,7 +801,6 @@ if __name__ == '__main__':
     res_gid_array, res_grid_id_array, res_max_storage_array, res_lat_array, res_lon_array = read_conus_reservoir_nc(conus_res_nc_path)
 
     # read huc4 basin
-    huc4 = '1711'
     nhd_data_dir = '/Users/donghui/Box Sync/Research/PhD/Projects/Drought_Cycle_Analysis/Data'
     gdf_huc2_conus, gdf_huc4_conus, gdf_huc4 = read_huc4_basin(huc4, nhd_data_dir)
 
@@ -798,13 +810,13 @@ if __name__ == '__main__':
     # sort grids by flow direction
     upstream_grid_dict, upstream_grid_id_dict, G, flow_dir_array_huc4 = sort_grids_by_flow_dir(flow_dir_array_conus, gdf_huc4_points, grid_id_array_conus, lat_array_conus, lon_array_conus)
 
-    # ######## plot flow network for the huc4 ########
-    # plot_flow_network(G, gdf_huc4)
-    # ################################################
-
     # read nldas runoff
     nldas_runoff_nc_path = '/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/processed/LRR/input/nldas_runoff.nc'
     nldas_qs_array, nldas_qsb_array = read_nldas_runoff(nldas_runoff_nc_path, lat_index_array, lon_index_array, start_date, end_date)    # [time, lat, lon]
+
+    # read gcam water demand
+    gcam_demand_file_path = '/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/processed/LRR/input/total_consumption_conus.nc'
+    total_demand_array = read_gcam_demand(gcam_demand_file_path, lat_index_array, lon_index_array, start_date, end_date)
 
     # read pdsi
     pdsi_file_path = f'/Users/donghui/Box Sync/Research/PhD/Projects/Water_Supply_Drought/data/processed/LRR/input/pdsi_{huc4}.csv'
@@ -813,14 +825,9 @@ if __name__ == '__main__':
     # prepare doy array
     doy_array = pd.date_range(start_date, end_date).dayofyear.values
 
-    # initialize grid
-    nrows, ncols = flow_dir_array_huc4.shape
-    grid_id_array_huc4 = grid_id_array_conus[np.ix_(lat_index_array, lon_index_array)]
-    grid = initialize_grid(nrows, ncols, res_grid_id_array, res_gid_array, res_max_storage_array, grid_id_array_huc4, grid_length, flow_dir_array_huc4)
-
-    # run simulation
-    save_var_list = [
-        'grid_id', 'reservoir_id', 'reservoir_storage_start', 'reservoir_storage_end', 'outflow_before_operation', 'outflow_after_operation', 
-        'grid_storage_start', 'grid_storage_end', 'flow_direction']
-    run_simulation(grid_length, grid, start_date, end_date, nldas_qs_array, nldas_qsb_array, pdsi_array, doy_array, save_var_list, u_e)
+    # save variables
+    # save_var_list = [
+    #     'grid_id', 'reservoir_id', 'reservoir_storage_start', 'reservoir_storage_end', 'outflow_before_operation', 'outflow_after_operation', 
+    #     'grid_storage_start', 'grid_storage_end', 'flow_direction']
+    save_var_list = []    # don't save any variables, just for analysis
 
