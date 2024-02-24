@@ -532,6 +532,10 @@ def gdrom_release(
     elif inflow + storage - sim_release < min_storage:
         sim_release = inflow + storage - min_storage
 
+        sim_release = max(sim_release, 0)    # release cannot be negative
+
+    
+
     return sim_release
 
 def update_reservoir_storage(
